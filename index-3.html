@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="de">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>FAKD · Rauchpool</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+    * {
+      box-sizing: border-box
+    }
+
+    body {
+      margin: 0;
+      background: #1b1b24;
+      color: #f2efe6;
+      font-family: 'Press Start 2P', monospace, system-ui;
+      font-size: 11px;
+      line-height: 1.7;
+      min-height: 100vh;
+      overflow-x: hidden
+    }
+
+    main {
+      max-width: 640px;
+      margin: auto;
+      padding: 24px 16px;
+      text-align: center
+    }
+
+    h1 {
+      font-size: 16px;
+      margin: 8px 0
+    }
+
+    canvas {
+      image-rendering: pixelated;
+      width: 100%;
+      max-width: 560px;
+      background: #23232f;
+      border: 4px solid #f2efe6
+    }
+
+    #time {
+      font-size: 40px;
+      margin: 12px 0
+    }
+
+    #clock {
+      opacity: .6
+    }
+
+    button,
+    input {
+      font: inherit;
+      font-size: 11px;
+      padding: 12px;
+      border: 3px solid #f2efe6;
+      background: #1b1b24;
+      color: #f2efe6;
+      border-radius: 0
+    }
+
+    button {
+      cursor: pointer;
+      background: #e8553d;
+      color: #fff
+    }
+
+    button.alt {
+      background: #1b1b24
+    }
+
+    button:active {
+      transform: translate(2px, 2px)
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin: 12px 0
+    }
+
+    #members span {
+      display: inline-block;
+      border: 2px solid #f2efe6;
+      padding: 4px 8px;
+      margin: 3px
+    }
+
+    #go {
+      color: #ffd23f;
+      font-size: 16px;
+      animation: b .6s steps(2) infinite
+    }
+
+    @keyframes b {
+      50% {
+        opacity: .3
+      }
+    }
+
+    .pop {
+      position: fixed;
+      width: 230px;
+      background: #c9c6b8;
+      color: #111;
+      border: 3px solid #111;
+      box-shadow: 5px 5px 0 #000;
+      z-index: 50;
+      text-align: left
+    }
+
+    .pop .bar {
+      background: #2b3a8c;
+      color: #fff;
+      padding: 5px 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 9px
+    }
+
+    .pop .bar b {
+      background: #c9c6b8;
+      color: #111;
+      border: 2px solid #111;
+      padding: 0 6px;
+      cursor: pointer;
+      font-size: 10px
+    }
+
+    .pop .body {
+      padding: 10px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      font-size: 9px
+    }
+
+    .spr {
+      width: 32px;
+      height: 32px;
+      flex: none;
+      image-rendering: pixelated
+    }
+
+    small {
+      opacity: .6;
+      font-size: 9px
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1>🚬 FAKD · RAUCHPOOL</h1>
+    <small>Mind. 3 Leute im Pool → 10 Min Countdown. Je mehr, desto schneller.</small>
+    <p id="status"></p>
+    <canvas id="cv" width="112" height="24"></canvas>
+    <div id="time">10:00</div>
+    <div id="clock"></div>
+    <div id="go" hidden>JETZT GEMEINSAM LOSGEHEN!</div>
+    <div class="row" id="joinrow"><input id="name" maxlength="20" placeholder="Dein Name"><button onclick="join()">Pool
+        beitreten</button></div>
+    <div class="row" id="leaverow" hidden><button class="alt" onclick="leave()">Verlassen</button><button
+        onclick="reset()" id="resetb">Neue Runde</button></div>
+    <p>Im Pool: <b id="cnt">0</b> · Tempo: <b id="spd">–</b></p>
+    <div id="members"></div>
+    <p><small id="mode"></small></p>
+  </main>
+  <script>
+    // ===== EINSTELLUNG: Firebase Realtime Database URL hier eintragen (siehe Anleitung) =====
+    const DB_URL = 'https://gemeinsam-rauchen-default-rtdb.europe-west1.firebasedatabase.app/'; // z. B. 'https://fakd-rauch-default-rtdb.europe-west1.firebasedatabase.app'
+    // ======================================================================================
+    const TOTAL = 600, MIN = 3, EXPIRE = 45 * 60e3;
+    const $ = id => document.getElementById(id);
+    const me = localStorage.rpId || (localStorage.rpId = Math.random().toString(36).slice(2, 10));
+    $('name').value = localStorage.rpName || '';
+    let members = {}, offset = 0, ctx, wasDone = false, loaded = false;
+    const now = () => Date.now() + offset;
+
+    /* ---------- Speicher: Firebase REST oder lokaler Demo-Modus ---------- */
+    const demo = !DB_URL;
+    $('mode').textContent = demo ? 'DEMO-MODUS (nur dieser Browser) – DB_URL im Code eintragen' : 'Live-Modus';
+    const url = p => `${DB_URL.replace(/\/$/, '')}/pool/${p}.json`;
+    async function put(id, name) {
+      if (demo) { const m = JSON.parse(localStorage.rpDemo || '{}'); m[id] = { name, t: Date.now() }; localStorage.rpDemo = JSON.stringify(m); return pull() }
+      await fetch(url('members/' + id), { method: 'PUT', body: JSON.stringify({ name, t: { '.sv': 'timestamp' } }) }); pull()
+    }
+    async function del(id) {
+      if (demo) { const m = JSON.parse(localStorage.rpDemo || '{}'); delete m[id]; localStorage.rpDemo = JSON.stringify(m); return pull() }
+      await fetch(url('members/' + id), { method: 'DELETE', keepalive: true }); pull()
+    }
+    async function clearAll() {
+      if (demo) { localStorage.rpDemo = '{}'; return pull() }
+      await fetch(url('members'), { method: 'DELETE' }); pull()
+    }
+    async function pull() {
+      try { members = demo ? JSON.parse(localStorage.rpDemo || '{}') : (await (await fetch(url('members'))).json()) || {} } catch (e) { }
+      loaded = true; render()
+    }
+    async function syncClock() {
+      if (demo) return;
+      try {
+        const a = Date.now(); const r = await (await fetch(url('ping/' + me), { method: 'PUT', body: JSON.stringify({ '.sv': 'timestamp' }) })).json();
+        offset = r - (a + Date.now()) / 2; fetch(url('ping/' + me), { method: 'DELETE' })
+      } catch (e) { }
+    }
+    if (demo) { addEventListener('storage', pull) }
+    else { try { const es = new EventSource(url('members')); es.addEventListener('put', pull); es.addEventListener('patch', pull) } catch (e) { } }
+    setInterval(pull, 5000);
+
+    /* ---------- Logik ---------- */
+    function calc() {
+      const ts = Object.values(members).filter(m => m && m.t && now() - m.t < EXPIRE).map(m => m.t).sort((a, b) => a - b);
+      const n = ts.length; if (n < MIN) return { n, state: 'wait', remain: TOTAL };
+      let p = 0; for (let k = MIN; k <= n; k++) { const s = ts[k - 1], e = k < n ? ts[k] : now(); p += Math.max(0, (e - s) / 1000) * (k / MIN) }
+      const remain = Math.max(0, TOTAL - p); return { n, state: remain <= 0 ? 'done' : 'run', remain, speed: n / MIN }
+    }
+    function fmt(s) { s = Math.ceil(s); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0') }
+    function inPool() { return members[me] }
+    function join() {
+      const nm = $('name').value.trim(); if (!nm) { $('name').focus(); $('name').style.borderColor = '#e8553d'; return }
+      localStorage.rpName = nm; unlock(); put(me, nm)
+    }
+    function leave() { del(me) }
+    function reset() { if (confirm('Pool für alle leeren und neue Runde starten?')) clearAll() }
+    addEventListener('beforeunload', () => { if (!demo && inPool()) fetch(url('members/' + me), { method: 'DELETE', keepalive: true }) });
+
+    /* ---------- Ton ---------- */
+    function unlock() { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); ctx.resume() }
+    function jingle() {
+      if (!ctx) return;[523, 659, 784, 1047, 784, 1047].forEach((f, i) => {
+        const o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'square'; o.frequency.value = f;
+        o.connect(g); g.connect(ctx.destination); const t = ctx.currentTime + i * .2; g.gain.setValueAtTime(.15, t); g.gain.exponentialRampToValueAtTime(.001, t + .19); o.start(t); o.stop(t + .2)
+      })
+    }
+
+    /* ---------- Render ---------- */
+    let S = { n: 0, state: 'wait', remain: TOTAL };
+    function render() {
+      S = calc(); const j = !!inPool();
+      $('joinrow').hidden = j; $('leaverow').hidden = !j;
+      $('cnt').textContent = S.n; $('spd').textContent = S.state === 'run' ? S.speed.toFixed(1) + 'x' : '–';
+      $('members').innerHTML = Object.values(members).filter(m => m && m.name).map(m => `<span>${m.name.replace(/[<>&"]/g, '')}</span>`).join('');
+      $('status').textContent = S.state === 'wait' ? `Noch ${Math.max(0, MIN - S.n)} Person(en) fehlen …` : S.state === 'run' ? 'Countdown läuft!' : 'Zeit ist um!';
+      $('go').hidden = S.state !== 'done';
+      if (S.state === 'done' && !wasDone && loaded && j) { jingle(); setTimeout(jingle, 1500) }
+      wasDone = S.state === 'done';
+    }
+    /* ---------- Zigarette ---------- */
+    const cv = $('cv'), c = cv.getContext('2d'); let smoke = [];
+    function px(x, y, w, h, col) { c.fillStyle = col; c.fillRect(Math.round(x), Math.round(y), w, h) }
+    function draw() {
+      S = calc(); const frac = S.state === 'wait' ? 1 : S.remain / TOTAL;
+      $('time').textContent = fmt(S.state === 'wait' ? TOTAL : S.remain);
+      $('clock').textContent = new Date(now()).toLocaleTimeString('de-DE');
+      c.clearRect(0, 0, 112, 24);
+      const x0 = 4, y = 10, fil = 16, full = 84, len = Math.round(full * frac);
+      px(x0, y, fil, 5, '#d98a3d'); px(x0, y, fil, 1, '#f0b36b'); for (let i = 0; i < fil; i += 4)px(x0 + i, y + 2, 2, 1, '#b06a28');
+      const px0 = x0 + fil; px(px0, y, len, 5, '#f2efe6'); px(px0, y + 4, len, 1, '#cfcab9');
+      const tip = px0 + len;
+      if (S.state !== 'done') {
+        px(tip, y, 3, 5, '#7a7a82'); px(tip + 3, y, 1, 5, Math.floor(Date.now() / 150) % 2 ? '#ff7a1a' : '#ffd23f');
+        px(tip + 4, y + 1, 1, 3, '#e8553d');
+        if (Math.random() < 0.25 + (S.speed || 1) * 0.1) smoke.push({ x: tip + 2 + Math.random() * 2, y: y - 1, a: 1 });
+      } else { px(tip, y, 2, 5, '#4a4a52') }
+      smoke.forEach(s => { s.y -= 0.25; s.x += Math.sin(s.y) * 0.15; s.a -= 0.012; c.globalAlpha = Math.max(0, s.a); px(s.x, s.y, 1, 1, '#cfcfd8') });
+      c.globalAlpha = 1; smoke = smoke.filter(s => s.a > 0);
+      requestAnimationFrame(draw)
+    }
+    draw(); setInterval(render, 500);
+
+    /* ---------- Pop-ups ---------- */
+    const MSG = ['Jetzt FAKD lesen!', 'Neue Ausgabe bald im Büro!', 'Hast du heute schon was eingereicht?', 'FAKD tagt 2x im Monat. Komm vorbei!', 'Trink ein Glas Wasser.', 'Flurfunk braucht dich!', 'Einreichen: Reiter auf der FAKD-Website'];
+    const SPR = [
+      ['..11111.', '.1222221', '12322221', '12222221', '.1222221', '..11111.', '..1..1..', '.11.11..'],
+      ['...11...', '..1221..', '.122221.', '12222221', '12222221', '.122221.', '..1111..', '...11...'],
+      ['11111111', '12222221', '12333321', '12333321', '12333321', '12222221', '11111111', '..1..1..']];
+    const PAL = [['#111', '#ffd23f', '#e8553d'], ['#111', '#5ec2ff', '#fff'], ['#111', '#7be07b', '#fff']];
+    function sprite(i, f) {
+      const cn = document.createElement('canvas'); cn.width = cn.height = 8; cn.className = 'spr'; const x = cn.getContext('2d'); const p = PAL[i % 3];
+      SPR[i % 3].forEach((row, yy) => [...row].forEach((ch, xx) => { if (ch !== '.') { x.fillStyle = p[ch - 1]; x.fillRect(xx, yy + (f ? 1 : 0) * (yy < 6 ? 0 : 0), 1, 1) } })); return cn
+    }
+    function popup() {
+      if (document.hidden) return;
+      const d = document.createElement('div'); d.className = 'pop';
+      d.style.left = Math.random() * Math.max(10, innerWidth - 250) + 'px'; d.style.top = (60 + Math.random() * Math.max(10, innerHeight - 200)) + 'px';
+      const i = Math.floor(Math.random() * 3);
+      d.innerHTML = `<div class="bar"><span>FAKD.exe</span><b>X</b></div><div class="body"><span></span><span>${MSG[Math.floor(Math.random() * MSG.length)]}</span></div>`;
+      const sp = sprite(i); d.querySelector('.body span').replaceWith(sp);
+      let f = 0; const iv = setInterval(() => { f ^= 1; sp.style.transform = f ? 'translateY(-3px)' : 'none' }, 350);
+      d.querySelector('b').onclick = () => { clearInterval(iv); d.remove() };
+      document.body.appendChild(d); setTimeout(() => { clearInterval(iv); d.remove() }, 20000)
+    }
+    (function loop() { setTimeout(() => { if (document.querySelectorAll('.pop').length < 3) popup(); loop() }, 6000 + Math.random() * 12000) })();
+
+    syncClock().then(pull);
+  </script>
+</body>
+
+</html>
